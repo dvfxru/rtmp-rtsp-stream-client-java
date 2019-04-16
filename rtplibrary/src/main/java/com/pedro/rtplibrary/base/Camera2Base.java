@@ -246,6 +246,15 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
    * @param path where file will be saved.
    * @throws IOException If you init it before start stream.
    */
+  public void startRecord(String path, CameraHelper.Facing facing, RecordController.Listener listener) throws IOException {
+      recordController.startRecord(path, listener);
+      if (!streaming) {
+          startEncoders(facing);
+      } else if (videoEncoder.isRunning()) {
+          resetVideoEncoder();
+      }
+  }
+
   public void startRecord(String path, RecordController.Listener listener) throws IOException {
     recordController.startRecord(path, listener);
     if (!streaming) {
@@ -341,6 +350,17 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
    * @startPreview to resolution seated in @prepareVideo. If you never startPreview this method
    * startPreview for you to resolution seated in @prepareVideo.
    */
+  public void startStream(String url, CameraHelper.Facing facing) {
+    streaming = true;
+    if (!recordController.isRecording()) {
+      startEncoders(facing);
+    } else {
+      resetVideoEncoder();
+    }
+    startStreamRtp(url);
+    onPreview = true;
+  }
+
   public void startStream(String url) {
     streaming = true;
     if (!recordController.isRecording()) {
@@ -351,6 +371,22 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
     startStreamRtp(url);
     onPreview = true;
   }
+
+    private void startEncoders(CameraHelper.Facing facing) {
+        videoEncoder.start();
+        audioEncoder.start();
+        prepareGlView();
+        microphoneManager.start();
+        if (onPreview) {
+            cameraManager.openLastCamera();
+        } else {
+            if (facing == CameraHelper.Facing.BACK)
+                cameraManager.openCameraBack();
+            else if (facing == CameraHelper.Facing.FRONT)
+                cameraManager.openCameraFront();
+        }
+        onPreview = true;
+    }
 
   private void startEncoders() {
     videoEncoder.start();
