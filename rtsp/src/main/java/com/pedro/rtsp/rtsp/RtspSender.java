@@ -10,6 +10,7 @@ import com.pedro.rtsp.rtp.packets.H264Packet;
 import com.pedro.rtsp.rtp.packets.H265Packet;
 import com.pedro.rtsp.rtp.packets.VideoPacketCallback;
 import com.pedro.rtsp.rtp.sockets.BaseRtpSocket;
+import com.pedro.rtsp.utils.BitrateManager;
 import com.pedro.rtsp.utils.ConnectCheckerRtsp;
 import com.pedro.rtsp.utils.RtpConstants;
 import java.io.IOException;
@@ -38,17 +39,26 @@ public class RtspSender implements VideoPacketCallback, AudioPacketCallback {
   private long videoFramesSent = 0;
   private long droppedAudioFrames = 0;
   private long droppedVideoFrames = 0;
+  private BitrateManager bitrateManager;
 
   public RtspSender(ConnectCheckerRtsp connectCheckerRtsp) {
     this.connectCheckerRtsp = connectCheckerRtsp;
+    bitrateManager = new BitrateManager(connectCheckerRtsp);
   }
 
-  public void setInfo(Protocol protocol, byte[] sps, byte[] pps, byte[] vps, int sampleRate) {
+  public void setSocketsInfo(Protocol protocol, int[] videoSourcePorts, int[] audioSourcePorts) {
+    rtpSocket = BaseRtpSocket.getInstance(protocol, videoSourcePorts[0], audioSourcePorts[0]);
+    baseSenderReport =
+        BaseSenderReport.getInstance(protocol, videoSourcePorts[1], audioSourcePorts[1]);
+  }
+
+  public void setVideoInfo(byte[] sps, byte[] pps, byte[] vps) {
     videoPacket =
         vps == null ? new H264Packet(sps, pps, this) : new H265Packet(sps, pps, vps, this);
+  }
+
+  public void setAudioInfo(int sampleRate) {
     aacPacket = new AacPacket(sampleRate, this);
-    rtpSocket = BaseRtpSocket.getInstance(protocol);
-    baseSenderReport = BaseSenderReport.getInstance(protocol);
   }
 
   /**
@@ -111,6 +121,8 @@ public class RtspSender implements VideoPacketCallback, AudioPacketCallback {
               continue;
             }
             rtpSocket.sendFrame(rtpFrame);
+            //bytes to bits
+            bitrateManager.calculateBitrate(rtpFrame.getLength() * 8);
             if (rtpFrame.isVideoFrame()) {
               videoFramesSent++;
             } else {
@@ -120,6 +132,7 @@ public class RtspSender implements VideoPacketCallback, AudioPacketCallback {
           } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
           } catch (IOException e) {
+            Thread.currentThread().interrupt();
             Log.e(TAG, "send error: ", e);
             connectCheckerRtsp.onConnectionFailedRtsp("Error send packet, " + e.getMessage());
           }
@@ -144,7 +157,7 @@ public class RtspSender implements VideoPacketCallback, AudioPacketCallback {
     baseSenderReport.close();
     rtpSocket.close();
     aacPacket.reset();
-    videoPacket.reset();
+    if (videoPacket != null) videoPacket.reset();
 
     resetSentAudioFrames();
     resetSentVideoFrames();

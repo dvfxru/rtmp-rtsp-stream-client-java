@@ -32,6 +32,7 @@ import java.net.SocketException;
 import java.util.Random;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import net.ossrs.rtmp.BitrateManager;
 import net.ossrs.rtmp.ConnectCheckerRtmp;
 import net.ossrs.rtmp.CreateSSLSocket;
 
@@ -80,9 +81,11 @@ public class RtmpConnection implements RtmpPublisher {
   private String opaque = null;
   private boolean onAuth = false;
   private String netConnectionDescription;
+  private BitrateManager bitrateManager;
 
   public RtmpConnection(ConnectCheckerRtmp connectCheckerRtmp) {
     this.connectCheckerRtmp = connectCheckerRtmp;
+    bitrateManager = new BitrateManager(connectCheckerRtmp);
   }
 
   private void handshake(InputStream in, OutputStream out) throws IOException {
@@ -293,14 +296,6 @@ public class RtmpConnection implements RtmpPublisher {
     releaseStream.addData(streamName);  // command object: null for "releaseStream"
     sendRtmpPacket(releaseStream);
 
-    Log.d(TAG, "createStream(): Sending FCPublish command...");
-    // transactionId == 3
-    Command FCPublish = new Command("FCPublish", ++transactionIdCounter);
-    FCPublish.getHeader().setChunkStreamId(ChunkStreamInfo.RTMP_CID_OVER_STREAM);
-    FCPublish.addData(new AmfNull());  // command object: null for "FCPublish"
-    FCPublish.addData(streamName);
-    sendRtmpPacket(FCPublish);
-
     Log.d(TAG, "createStream(): Sending createStream command...");
     ChunkStreamInfo chunkStreamInfo =
         rtmpSessionInfo.getChunkStreamInfo(ChunkStreamInfo.RTMP_CID_OVER_CONNECTION);
@@ -308,6 +303,14 @@ public class RtmpConnection implements RtmpPublisher {
     Command createStream = new Command("createStream", ++transactionIdCounter, chunkStreamInfo);
     createStream.addData(new AmfNull());  // command object: null for "createStream"
     sendRtmpPacket(createStream);
+
+    Log.d(TAG, "createStream(): Sending FCPublish command...");
+    // transactionId == 3
+    Command FCPublish = new Command("FCPublish", ++transactionIdCounter);
+    FCPublish.getHeader().setChunkStreamId(ChunkStreamInfo.RTMP_CID_OVER_STREAM);
+    FCPublish.addData(new AmfNull());  // command object: null for "FCPublish"
+    FCPublish.addData(streamName);
+    sendRtmpPacket(FCPublish);
 
     // Waiting for "NetStream.Publish.Start" response.
     synchronized (publishLock) {
@@ -391,7 +394,7 @@ public class RtmpConnection implements RtmpPublisher {
     sendRtmpPacket(closeStream);
   }
 
-  private void shutdown(boolean r) {
+  private synchronized void shutdown(boolean r) {
     if (socket != null) {
       try {
         // It will raise EOFException in handleRxPacketThread
@@ -399,7 +402,7 @@ public class RtmpConnection implements RtmpPublisher {
         // It will raise SocketException in sendRtmpPacket
         socket.shutdownOutput();
       } catch (IOException | UnsupportedOperationException e) {
-        e.printStackTrace();
+        Log.e(TAG, "Shutdown socket", e);
       }
 
       // shutdown rxPacketHandler
@@ -464,6 +467,8 @@ public class RtmpConnection implements RtmpPublisher {
     audio.getHeader().setAbsoluteTimestamp(dts);
     audio.getHeader().setMessageStreamId(currentStreamId);
     sendRtmpPacket(audio);
+    //bytes to bits
+    bitrateManager.calculateBitrate(size * 8);
   }
 
   @Override
@@ -481,6 +486,8 @@ public class RtmpConnection implements RtmpPublisher {
     video.getHeader().setAbsoluteTimestamp(dts);
     video.getHeader().setMessageStreamId(currentStreamId);
     sendRtmpPacket(video);
+    //bytes to bits
+    bitrateManager.calculateBitrate(size * 8);
   }
 
   private void sendRtmpPacket(RtmpPacket rtmpPacket) {
@@ -579,6 +586,20 @@ public class RtmpConnection implements RtmpPublisher {
         connectCheckerRtmp.onConnectionFailedRtmp("Error reading packet: " + e.getMessage());
         Log.e(TAG, "Caught SocketException while reading/decoding packet, shutting down: "
             + e.getMessage());
+        /**
+         * This is a temporal solution.
+         * ffmpeg server send packets so rare.
+         * He send part of the second packet in the first stream when you send create stream command.
+         * So packet parser crash for this reason we assume that publish is always permitted and send data.
+         * Maybe this is ffmpeg server bug (in page documentation it is an experimental command).
+         * */
+      } catch (IllegalArgumentException e) {
+        onMetaData();
+        // We can now publish AV data
+        publishPermitted = true;
+        synchronized (publishLock) {
+          publishLock.notifyAll();
+        }
       }
     }
   }

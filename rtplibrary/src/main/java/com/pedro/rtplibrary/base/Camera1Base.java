@@ -5,7 +5,7 @@ import android.hardware.Camera;
 import android.media.MediaCodec;
 import android.media.MediaFormat;
 import android.os.Build;
-import android.support.annotation.RequiresApi;
+import androidx.annotation.RequiresApi;
 import android.util.Log;
 import android.view.MotionEvent;
 import android.view.SurfaceView;
@@ -23,6 +23,8 @@ import com.pedro.encoder.utils.CodecUtil;
 import com.pedro.encoder.video.FormatVideoEncoder;
 import com.pedro.encoder.video.GetVideoData;
 import com.pedro.encoder.video.VideoEncoder;
+import com.pedro.rtplibrary.util.FpsListener;
+import com.pedro.rtplibrary.util.RecordController;
 import com.pedro.rtplibrary.view.GlInterface;
 import com.pedro.rtplibrary.view.LightOpenGlView;
 import com.pedro.rtplibrary.view.OffScreenGlThread;
@@ -59,6 +61,8 @@ public abstract class Camera1Base
   private boolean videoEnabled = true;
   private boolean onPreview = false;
   private RecordController recordController;
+  private int previewWidth, previewHeight;
+  private FpsListener fpsListener = new FpsListener();
 
   public Camera1Base(SurfaceView surfaceView) {
     context = surfaceView.getContext();
@@ -104,6 +108,13 @@ public abstract class Camera1Base
     microphoneManager = new MicrophoneManager(this);
     audioEncoder = new AudioEncoder(this);
     recordController = new RecordController();
+  }
+
+  /**
+   * @param callback get fps while record or stream
+   */
+  public void setFpsListener(FpsListener.Callback callback) {
+    fpsListener.setCallback(callback);
   }
 
   /**
@@ -170,7 +181,7 @@ public abstract class Camera1Base
    */
   public boolean prepareVideo(int width, int height, int fps, int bitrate, boolean hardwareRotation,
       int iFrameInterval, int rotation) {
-    if (onPreview) {
+    if (onPreview && width != previewWidth || height != previewHeight) {
       stopPreview();
       onPreview = true;
     }
@@ -206,7 +217,8 @@ public abstract class Camera1Base
       boolean noiseSuppressor) {
     microphoneManager.createMicrophone(sampleRate, isStereo, echoCanceler, noiseSuppressor);
     prepareAudioRtp(isStereo, sampleRate);
-    return audioEncoder.prepareAudioEncoder(bitrate, sampleRate, isStereo);
+    return audioEncoder.prepareAudioEncoder(bitrate, sampleRate, isStereo,
+        microphoneManager.getMaxInputSize());
   }
 
   /**
@@ -258,8 +270,7 @@ public abstract class Camera1Base
   }
 
   @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR2)
-  public void startRecord(final String path)
-      throws IOException {
+  public void startRecord(final String path) throws IOException {
     startRecord(path, null);
   }
 
@@ -284,6 +295,8 @@ public abstract class Camera1Base
    */
   public void startPreview(CameraHelper.Facing cameraFacing, int width, int height, int rotation) {
     if (!isStreaming() && !onPreview && !(glInterface instanceof OffScreenGlThread)) {
+      previewWidth = width;
+      previewHeight = height;
       if (glInterface != null && Build.VERSION.SDK_INT >= 18) {
         boolean isPortrait = context.getResources().getConfiguration().orientation == 1;
         if (isPortrait) {
@@ -331,6 +344,8 @@ public abstract class Camera1Base
       }
       cameraManager.stop();
       onPreview = false;
+      previewWidth = 0;
+      previewHeight = 0;
     } else {
       Log.e(TAG, "Streaming or preview stopped, ignored");
     }
@@ -383,7 +398,10 @@ public abstract class Camera1Base
     prepareGlView();
     microphoneManager.start();
     cameraManager.setRotation(videoEncoder.getRotation());
-    cameraManager.start(videoEncoder.getWidth(), videoEncoder.getHeight(), videoEncoder.getFps());
+    if (!cameraManager.isRunning() && videoEncoder.getWidth() != previewWidth
+        || videoEncoder.getHeight() != previewHeight) {
+      cameraManager.start(videoEncoder.getWidth(), videoEncoder.getHeight(), videoEncoder.getFps());
+    }
     onPreview = true;
   }
 
@@ -402,15 +420,18 @@ public abstract class Camera1Base
       if (glInterface instanceof OffScreenGlThread) {
         glInterface = new OffScreenGlThread(context);
         glInterface.init();
-        ((OffScreenGlThread) glInterface).setFps(videoEncoder.getFps());
       }
+      glInterface.setFps(videoEncoder.getFps());
       if (videoEncoder.getRotation() == 90 || videoEncoder.getRotation() == 270) {
         glInterface.setEncoderSize(videoEncoder.getHeight(), videoEncoder.getWidth());
       } else {
         glInterface.setEncoderSize(videoEncoder.getWidth(), videoEncoder.getHeight());
       }
       glInterface.setRotation(0);
-      glInterface.start();
+      if (!cameraManager.isRunning() && videoEncoder.getWidth() != previewWidth
+          || videoEncoder.getHeight() != previewHeight) {
+        glInterface.start();
+      }
       if (videoEncoder.getInputSurface() != null) {
         glInterface.addMediaCodecSurface(videoEncoder.getInputSurface());
       }
@@ -622,7 +643,7 @@ public abstract class Camera1Base
    * @return true if recording, false if not recoding.
    */
   public boolean isRecording() {
-    return recordController.isRecording();
+    return recordController.isRunning();
   }
 
   public void pauseRecord() {
@@ -663,6 +684,7 @@ public abstract class Camera1Base
 
   @Override
   public void getVideoData(ByteBuffer h264Buffer, MediaCodec.BufferInfo info) {
+    fpsListener.calculateFps();
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2) {
       recordController.recordVideo(h264Buffer, info);
     }
@@ -670,8 +692,8 @@ public abstract class Camera1Base
   }
 
   @Override
-  public void inputPCMData(byte[] buffer, int size) {
-    audioEncoder.inputPCMData(buffer, size);
+  public void inputPCMData(byte[] buffer, int offset, int size) {
+    audioEncoder.inputPCMData(buffer, offset, size);
   }
 
   @Override

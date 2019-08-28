@@ -5,6 +5,7 @@ import android.media.AudioRecord;
 import android.media.MediaRecorder;
 import android.util.Log;
 import com.pedro.encoder.audio.DataTaken;
+import java.nio.ByteBuffer;
 
 /**
  * Created by pedro on 19/01/17.
@@ -16,7 +17,7 @@ public class MicrophoneManager {
   private static final int BUFFER_SIZE = 4096;
   private AudioRecord audioRecord;
   private GetMicrophoneData getMicrophoneData;
-  private byte[] pcmBuffer = new byte[BUFFER_SIZE];
+  private ByteBuffer pcmBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE);
   private byte[] pcmBufferMuted = new byte[BUFFER_SIZE];
   private boolean running = false;
   private boolean created = false;
@@ -50,7 +51,7 @@ public class MicrophoneManager {
     if (!isStereo) channel = AudioFormat.CHANNEL_IN_MONO;
     audioRecord =
         new AudioRecord(MediaRecorder.AudioSource.DEFAULT, sampleRate, channel, audioFormat,
-            getPcmBufferSize() * 4);
+            getPcmBufferSize());
     audioPostProcessEffect = new AudioPostProcessEffect(audioRecord.getAudioSessionId());
     if (echoCanceler) audioPostProcessEffect.enableEchoCanceler();
     if (noiseSuppressor) audioPostProcessEffect.enableNoiseSuppressor();
@@ -62,7 +63,7 @@ public class MicrophoneManager {
   /**
    * Start record and get data
    */
-  public void start() {
+  public synchronized void start() {
     init();
     thread = new Thread(new Runnable() {
       @Override
@@ -70,7 +71,7 @@ public class MicrophoneManager {
         while (running && !Thread.interrupted()) {
           DataTaken dataTaken = read();
           if (dataTaken != null) {
-            getMicrophoneData.inputPCMData(dataTaken.getPcmBuffer(), dataTaken.getSize());
+            getMicrophoneData.inputPCMData(dataTaken.getPcmBuffer(), dataTaken.getOffset(), dataTaken.getSize());
           } else {
             running = false;
           }
@@ -107,17 +108,18 @@ public class MicrophoneManager {
    * @return Object with size and PCM buffer data
    */
   private DataTaken read() {
-    int size = audioRecord.read(pcmBuffer, 0, pcmBuffer.length);
+    pcmBuffer.rewind();
+    int size = audioRecord.read(pcmBuffer, pcmBuffer.remaining());
     if (size <= 0) {
       return null;
     }
-    return new DataTaken(muted ? pcmBufferMuted : pcmBuffer, size);
+    return new DataTaken(muted ? pcmBufferMuted : pcmBuffer.array(), muted ? 0 : pcmBuffer.arrayOffset(), size);
   }
 
   /**
    * Stop and release microphone
    */
-  public void stop() {
+  public synchronized void stop() {
     running = false;
     created = false;
     if (thread != null) {
@@ -127,8 +129,8 @@ public class MicrophoneManager {
       } catch (InterruptedException e) {
         thread.interrupt();
       }
+      thread = null;
     }
-    thread = null;
     if (audioRecord != null) {
       audioRecord.setRecordPositionUpdateListener(null);
       audioRecord.stop();
@@ -147,8 +149,12 @@ public class MicrophoneManager {
    */
   private int getPcmBufferSize() {
     int pcmBufSize =
-        AudioRecord.getMinBufferSize(sampleRate, channel, AudioFormat.ENCODING_PCM_16BIT) + 8191;
-    return pcmBufSize - (pcmBufSize % 8192);
+        AudioRecord.getMinBufferSize(sampleRate, channel, AudioFormat.ENCODING_PCM_16BIT);
+    return pcmBufSize * 5;
+  }
+
+  public int getMaxInputSize() {
+    return BUFFER_SIZE;
   }
 
   public int getSampleRate() {

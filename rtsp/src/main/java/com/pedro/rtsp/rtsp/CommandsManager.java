@@ -33,17 +33,17 @@ public class CommandsManager {
   private int trackAudio = 0;
   private int trackVideo = 1;
   private Protocol protocol;
+  private boolean isOnlyAudio;
 
   //For udp
-  private int[] audioPorts = new int[] { 5000, 5001 };
-  private int[] videoPorts = new int[] { 5002, 5003 };
+  private final int[] audioClientPorts = new int[] { 5000, 5001 };
+  private final int[] videoClientPorts = new int[] { 5002, 5003 };
+  private int[] audioServerPorts = new int[] { 5004, 5005 };
+  private int[] videoServerPorts = new int[] { 5006, 5007 };
   private byte[] vps; //For H265
   //For auth
   private String user;
   private String password;
-  //For only audio
-  private final String defaultSps = "Z0KAHtoHgUZA";
-  private final String defaultPps = "aM4NiA==";
 
   public CommandsManager() {
     protocol = Protocol.TCP;
@@ -65,6 +65,14 @@ public class CommandsManager {
 
   private String encodeToString(byte[] bytes) {
     return Base64.encodeToString(bytes, 0, bytes.length, Base64.NO_WRAP);
+  }
+
+  public boolean isOnlyAudio() {
+    return isOnlyAudio;
+  }
+
+  public void setOnlyAudio(boolean onlyAudio) {
+    isOnlyAudio = onlyAudio;
   }
 
   public void setVideoInfo(ByteBuffer sps, ByteBuffer pps, ByteBuffer vps) {
@@ -136,6 +144,14 @@ public class CommandsManager {
     return protocol;
   }
 
+  public int[] getAudioClientPorts() {
+    return audioClientPorts;
+  }
+
+  public int[] getVideoClientPorts() {
+    return videoClientPorts;
+  }
+
   public byte[] getVps() {
     return vps;
   }
@@ -148,27 +164,32 @@ public class CommandsManager {
     return password;
   }
 
-  public int[] getAudioPorts() {
-    return audioPorts;
+  public int[] getAudioServerPorts() {
+    return audioServerPorts;
   }
 
-  public int[] getVideoPorts() {
-    return videoPorts;
+  public int[] getVideoServerPorts() {
+    return videoServerPorts;
   }
 
   public void clear() {
-    cSeq = 0;
     sps = null;
     pps = null;
+    vps = null;
+    retryClear();
+  }
+
+  public void retryClear() {
+    cSeq = 0;
     sessionId = null;
   }
 
   private String getSpsString() {
-    return sps != null ? encodeToString(sps) : defaultSps;
+    return encodeToString(sps);
   }
 
   private String getPpsString() {
-    return pps != null ? encodeToString(pps) : defaultPps;
+    return encodeToString(pps);
   }
 
   private String getVpsString() {
@@ -181,8 +202,11 @@ public class CommandsManager {
   }
 
   private String createBody() {
-    String videoBody = vps == null ? Body.createH264Body(trackVideo, getSpsString(), getPpsString())
-        : Body.createH265Body(trackVideo, getSpsString(), getPpsString(), getVpsString());
+    String videoBody = "";
+    if (!isOnlyAudio) {
+      videoBody = vps == null ? Body.createH264Body(trackVideo, getSpsString(), getPpsString())
+          : Body.createH265Body(trackVideo, getSpsString(), getPpsString(), getVpsString());
+    }
     return "v=0\r\n"
         + "o=- "
         + timeStamp
@@ -246,10 +270,9 @@ public class CommandsManager {
   }
 
   public String createSetup(int track) {
+    int[] udpPorts = track == trackVideo ? videoClientPorts : audioClientPorts;
     String params =
-        (protocol == Protocol.UDP) ? ("UDP;unicast;client_port=" + (5000 + 2 * track) + "-" + (5000
-            + 2 * track
-            + 1) + ";mode=record")
+        (protocol == Protocol.UDP) ? ("UDP;unicast;client_port=" + udpPorts[0] + "-" + udpPorts[1] + ";mode=record")
             : ("TCP;interleaved=" + 2 * track + "-" + (2 * track + 1) + ";mode=record");
     String setup = "SETUP rtsp://"
         + host
@@ -377,11 +400,11 @@ public class CommandsManager {
           Matcher matcher = rtspPattern.matcher(line);
           if (matcher.find()) {
             if (isAudio) {
-              audioPorts[0] = Integer.parseInt(matcher.group(1));
-              audioPorts[1] = Integer.parseInt(matcher.group(2));
+              audioServerPorts[0] = Integer.parseInt(matcher.group(1));
+              audioServerPorts[1] = Integer.parseInt(matcher.group(2));
             } else {
-              videoPorts[0] = Integer.parseInt(matcher.group(1));
-              videoPorts[1] = Integer.parseInt(matcher.group(2));
+              videoServerPorts[0] = Integer.parseInt(matcher.group(1));
+              videoServerPorts[1] = Integer.parseInt(matcher.group(2));
             }
           }
         }

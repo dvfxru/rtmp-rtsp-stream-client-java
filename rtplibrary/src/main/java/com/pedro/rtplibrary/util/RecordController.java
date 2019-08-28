@@ -1,10 +1,10 @@
-package com.pedro.rtplibrary.base;
+package com.pedro.rtplibrary.util;
 
 import android.media.MediaCodec;
 import android.media.MediaFormat;
 import android.media.MediaMuxer;
 import android.os.Build;
-import android.support.annotation.RequiresApi;
+import androidx.annotation.RequiresApi;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 
@@ -47,8 +47,11 @@ public class RecordController {
   public void stopRecord() {
     status = Status.STOPPED;
     if (mediaMuxer != null) {
-      mediaMuxer.stop();
-      mediaMuxer.release();
+      try {
+        mediaMuxer.stop();
+        mediaMuxer.release();
+      } catch (Exception ignored) {
+      }
     }
     mediaMuxer = null;
     videoTrack = -1;
@@ -56,6 +59,13 @@ public class RecordController {
     pauseMoment = 0;
     pauseTime = 0;
     if (listener != null) listener.onStatusChange(status);
+  }
+
+  public boolean isRunning() {
+    return status == Status.STARTED
+        || status == Status.RECORDING
+        || status == Status.RESUMED
+        || status == Status.PAUSED;
   }
 
   public boolean isRecording() {

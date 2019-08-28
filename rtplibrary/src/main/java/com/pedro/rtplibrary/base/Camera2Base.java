@@ -5,7 +5,7 @@ import android.hardware.camera2.CameraCharacteristics;
 import android.media.MediaCodec;
 import android.media.MediaFormat;
 import android.os.Build;
-import android.support.annotation.RequiresApi;
+import androidx.annotation.RequiresApi;
 import android.util.Size;
 import android.view.MotionEvent;
 import android.view.Surface;
@@ -22,6 +22,8 @@ import com.pedro.encoder.utils.CodecUtil;
 import com.pedro.encoder.video.FormatVideoEncoder;
 import com.pedro.encoder.video.GetVideoData;
 import com.pedro.encoder.video.VideoEncoder;
+import com.pedro.rtplibrary.util.FpsListener;
+import com.pedro.rtplibrary.util.RecordController;
 import com.pedro.rtplibrary.view.GlInterface;
 import com.pedro.rtplibrary.view.LightOpenGlView;
 import com.pedro.rtplibrary.view.OffScreenGlThread;
@@ -57,6 +59,8 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
   private boolean onPreview = false;
   private boolean isBackground = false;
   private RecordController recordController;
+  private int previewWidth, previewHeight;
+  private FpsListener fpsListener = new FpsListener();
 
   public Camera2Base(SurfaceView surfaceView) {
     this.surfaceView = surfaceView;
@@ -100,6 +104,13 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
     microphoneManager = new MicrophoneManager(this);
     audioEncoder = new AudioEncoder(this);
     recordController = new RecordController();
+  }
+
+  /**
+   * @param callback get fps while record or stream
+   */
+  public void setFpsListener(FpsListener.Callback callback) {
+    fpsListener.setCallback(callback);
   }
 
   /**
@@ -168,7 +179,7 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
    */
   public boolean prepareVideo(int width, int height, int fps, int bitrate, boolean hardwareRotation,
       int iFrameInterval, int rotation) {
-    if (onPreview) {
+    if (onPreview && !(glInterface != null && width == previewWidth && height == previewHeight)) {
       stopPreview();
       onPreview = true;
     }
@@ -205,7 +216,8 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
       boolean noiseSuppressor) {
     microphoneManager.createMicrophone(sampleRate, isStereo, echoCanceler, noiseSuppressor);
     prepareAudioRtp(isStereo, sampleRate);
-    return audioEncoder.prepareAudioEncoder(bitrate, sampleRate, isStereo);
+    return audioEncoder.prepareAudioEncoder(bitrate, sampleRate, isStereo,
+        microphoneManager.getMaxInputSize());
   }
 
   /**
@@ -286,6 +298,8 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
    */
   public void startPreview(CameraHelper.Facing cameraFacing, int width, int height, int rotation) {
     if (!isStreaming() && !onPreview && !isBackground) {
+      previewWidth = width;
+      previewHeight = height;
       if (surfaceView != null) {
         cameraManager.prepareCamera(surfaceView.getHolder().getSurface());
       } else if (textureView != null) {
@@ -335,6 +349,8 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
       }
       cameraManager.closeCamera(false);
       onPreview = false;
+      previewWidth = 0;
+      previewHeight = 0;
     }
   }
 
@@ -393,10 +409,13 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
     audioEncoder.start();
     prepareGlView();
     microphoneManager.start();
-    if (onPreview) {
-      cameraManager.openLastCamera();
-    } else {
-      cameraManager.openCameraBack();
+    if (glInterface == null && !cameraManager.isRunning() && videoEncoder.getWidth() != previewWidth
+        || videoEncoder.getHeight() != previewHeight) {
+      if (onPreview) {
+        cameraManager.openLastCamera();
+      } else {
+        cameraManager.openCameraBack();
+      }
     }
     onPreview = true;
   }
@@ -420,8 +439,8 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
       if (glInterface instanceof OffScreenGlThread) {
         glInterface = new OffScreenGlThread(context);
         glInterface.init();
-        ((OffScreenGlThread) glInterface).setFps(videoEncoder.getFps());
       }
+      glInterface.setFps(videoEncoder.getFps());
       if (videoEncoder.getRotation() == 90 || videoEncoder.getRotation() == 270) {
         glInterface.setEncoderSize(videoEncoder.getHeight(), videoEncoder.getWidth());
       } else {
@@ -429,7 +448,10 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
       }
       int rotation = videoEncoder.getRotation();
       glInterface.setRotation(rotation == 0 ? 270 : rotation - 90);
-      glInterface.start();
+      if (!cameraManager.isRunning() && videoEncoder.getWidth() != previewWidth
+          || videoEncoder.getHeight() != previewHeight) {
+        glInterface.start();
+      }
       if (videoEncoder.getInputSurface() != null) {
         glInterface.addMediaCodecSurface(videoEncoder.getInputSurface());
       }
@@ -463,6 +485,11 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
       audioEncoder.stop();
       recordController.resetFormats();
     }
+  }
+
+  public void reTry(long delay) {
+    resetVideoEncoder();
+    reConnect(delay);
   }
 
   //re connection
@@ -592,7 +619,6 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
    * Use this method if you use a zoom slider.
    *
    * @param level Expected to be >= 1 and <= max zoom level
-   *
    * @see Camera2Base#getMaxZoom()
    */
   public void setZoom(float level) {
@@ -689,7 +715,7 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
    * @return true if recording, false if not recoding.
    */
   public boolean isRecording() {
-    return recordController.isRecording();
+    return recordController.isRunning();
   }
 
   public void pauseRecord() {
@@ -737,13 +763,14 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
 
   @Override
   public void getVideoData(ByteBuffer h264Buffer, MediaCodec.BufferInfo info) {
+    fpsListener.calculateFps();
     recordController.recordVideo(h264Buffer, info);
     if (streaming) getH264DataRtp(h264Buffer, info);
   }
 
   @Override
-  public void inputPCMData(byte[] buffer, int size) {
-    audioEncoder.inputPCMData(buffer, size);
+  public void inputPCMData(byte[] buffer, int offset, int size) {
+    audioEncoder.inputPCMData(buffer, offset, size);
   }
 
   @Override

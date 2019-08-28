@@ -18,8 +18,8 @@ import android.hardware.camera2.params.StreamConfigurationMap;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
-import android.support.annotation.NonNull;
-import android.support.annotation.RequiresApi;
+import androidx.annotation.NonNull;
+import androidx.annotation.RequiresApi;
 import android.util.Log;
 import android.util.Size;
 import android.view.MotionEvent;
@@ -27,7 +27,6 @@ import android.view.Surface;
 import android.view.SurfaceView;
 import android.view.TextureView;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
@@ -69,6 +68,7 @@ public class Camera2ApiManager extends CameraDevice.StateCallback {
   private float fingerSpacing = 0;
   private float zoomLevel = 1.0f;
   private boolean lanternEnable = false;
+  private boolean running = false;
 
   //Face detector
   public interface FaceDetectorCallback {
@@ -131,7 +131,7 @@ public class Camera2ApiManager extends CameraDevice.StateCallback {
           try {
             if (surfaceView != null || textureView != null) {
               cameraCaptureSession.setRepeatingBurst(
-                  Arrays.asList(drawSurface(preview), drawSurface(surfaceEncoder)),
+                  Collections.singletonList(drawSurface(preview, surfaceEncoder)),
                   faceDetectionEnabled ? cb : null, cameraHandler);
             } else {
               cameraCaptureSession.setRepeatingBurst(
@@ -166,10 +166,10 @@ public class Camera2ApiManager extends CameraDevice.StateCallback {
     return surface;
   }
 
-  private CaptureRequest drawSurface(Surface surface) {
+  private CaptureRequest drawSurface(Surface... surfaces) {
     try {
       builderInputSurface = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
-      builderInputSurface.addTarget(surface);
+      for (Surface surface : surfaces) builderInputSurface.addTarget(surface);
       return builderInputSurface.build();
     } catch (CameraAccessException | IllegalStateException e) {
       Log.e(TAG, "Error", e);
@@ -282,7 +282,7 @@ public class Camera2ApiManager extends CameraDevice.StateCallback {
           cameraCaptureSession.setRepeatingRequest(builderInputSurface.build(), faceDetectionEnabled ? cb : null, null);
           lanternEnable = true;
         } catch (CameraAccessException | IllegalStateException e) {
-          e.printStackTrace();
+          Log.e(TAG, "Error", e);
         }
       }
     } else {
@@ -302,7 +302,7 @@ public class Camera2ApiManager extends CameraDevice.StateCallback {
           cameraCaptureSession.setRepeatingRequest(builderInputSurface.build(), faceDetectionEnabled ? cb : null, null);
           lanternEnable = false;
         } catch (CameraAccessException | IllegalStateException e) {
-          e.printStackTrace();
+          Log.e(TAG, "Error", e);
         }
       }
     }
@@ -388,6 +388,7 @@ public class Camera2ApiManager extends CameraDevice.StateCallback {
       try {
         cameraManager.openCamera(cameraId.toString(), this, cameraHandler);
         cameraCharacteristics = cameraManager.getCameraCharacteristics(Integer.toString(cameraId));
+        running = true;
         isFrontCamera =
             (LENS_FACING_FRONT == cameraCharacteristics.get(CameraCharacteristics.LENS_FACING));
       } catch (CameraAccessException | SecurityException e) {
@@ -396,6 +397,10 @@ public class Camera2ApiManager extends CameraDevice.StateCallback {
     } else {
       Log.e(TAG, "Camera2ApiManager need be prepared, Camera2ApiManager not enabled");
     }
+  }
+
+  public boolean isRunning() {
+    return running;
   }
 
   public void switchCamera() {
@@ -476,13 +481,11 @@ public class Camera2ApiManager extends CameraDevice.StateCallback {
   public void closeCamera(boolean reOpen) {
     if (reOpen) {
       try {
+        if (surfaceEncoder != null && isOpenGl) return;
         cameraCaptureSession.stopRepeating();
         if (surfaceView != null || textureView != null) {
           cameraCaptureSession.setRepeatingBurst(Collections.singletonList(drawSurface(preview)),
               null, cameraHandler);
-        } else if (surfaceEncoder != null && isOpenGl) {
-          cameraCaptureSession.setRepeatingBurst(
-              Collections.singletonList(drawSurface(surfaceEncoder)), null, cameraHandler);
         }
       } catch (Exception e) {
         Log.e(TAG, "Error", e);
@@ -506,6 +509,7 @@ public class Camera2ApiManager extends CameraDevice.StateCallback {
       prepared = false;
       builderPreview = null;
       builderInputSurface = null;
+      running = false;
     }
   }
 
